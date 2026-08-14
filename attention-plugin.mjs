@@ -13,6 +13,9 @@
 // 会话都会产生新 agent 对象),同时清理已销毁的 agent;webServer 就绪前
 // 路由注册也由同一轮询重试。
 //
+// 生命周期纪律:每个 agent 的监听器拆解函数都随条目保存,agent 销毁时
+// 与插件卸载时统一执行,不留任何跨插件生命周期的注册。
+//
 // 经宿主 webServer 挂载 GET /dsh-attention,供桌面壳(如 dsh-shell)注入
 // 页面的轮询器读取并上报任务栏闪烁。本插件只消费宿主服务、不发布任何
 // 服务。端点带 stats 自诊断计数。
@@ -21,8 +24,9 @@
 // 绝对路径会被 Node ESM 当作 scheme 为 c: 的 URL 而拒绝导入)。
 
 const now = () => Date.now()
+const HOSTAGE_MS = 1000 // 审批/提问挂起多久后视为"需要介入"(机器秒答不误报)
 
-const liveAgents = new Map() // Agent -> local
+const liveAgents = new Map() // Agent -> { local, off }
 const wiredAgents = new WeakSet()
 let routeDispose = null
 let routeReady = false
@@ -36,17 +40,17 @@ function aggregate() {
     completedAt: 0,
     stats: { sessions: liveAgents.size, approvals: 0, questions: 0, completions: 0 },
   }
-  for (const local of liveAgents.values()) {
+  for (const { local } of liveAgents.values()) {
     let oldest = -1
     for (const entry of local.approvals) {
       if (oldest < 0 || entry.since < oldest) oldest = entry.since
     }
-    if (oldest >= 0 && t - oldest >= 1000) out.intervention = true
+    if (oldest >= 0 && t - oldest >= HOSTAGE_MS) out.intervention = true
     oldest = -1
     for (const entry of local.questions) {
       if (oldest < 0 || entry.since < oldest) oldest = entry.since
     }
-    if (oldest >= 0 && t - oldest >= 1000) out.intervention = true
+    if (oldest >= 0 && t - oldest >= HOSTAGE_MS) out.intervention = true
     if (local.running) out.running = true
     if (local.completedAt > out.completedAt) {
       out.completedAt = local.completedAt
@@ -76,7 +80,7 @@ export function apply(ctx) {
     else done()
   }
 
-  // 在根 agent 的 ctx 上注册三个监听器(闭包绑定该 agent 的 local)
+  // 在根 agent 的 ctx 上注册三个监听器,返回统一拆解函数
   const registerListeners = (target, local) => {
     const offs = []
     offs.push(target.on('agent/status', (payload) => {
@@ -126,6 +130,14 @@ export function apply(ctx) {
     }
   }
 
+  const detachAgent = (agent) => {
+    const entry = liveAgents.get(agent)
+    if (entry) {
+      try { entry.off() } catch (err) { /* 已随 agent ctx 清理则忽略 */ }
+      liveAgents.delete(agent)
+    }
+  }
+
   const wireAgent = (agent) => {
     if (wiredAgents.has(agent)) return
     if (!agent || !agent.ctx || typeof agent.ctx.on !== 'function') return
@@ -138,18 +150,20 @@ export function apply(ctx) {
       completedAt: 0,
       stats: { approvals: 0, questions: 0, completions: 0 },
     }
-    liveAgents.set(agent, local)
-    registerListeners(agent.ctx, local)
+    const off = registerListeners(agent.ctx, local)
+    liveAgents.set(agent, { local, off })
     console.log('[attention] wired root agent ' + String(agent.id))
   }
 
   const sweep = (agents) => {
     for (const agent of liveAgents.keys()) {
+      let alive = false
       try {
-        if (agents.get(agent.id) !== agent) liveAgents.delete(agent)
+        alive = agents.get(agent.id) === agent
       } catch (err) {
-        liveAgents.delete(agent)
+        alive = false
       }
+      if (!alive) detachAgent(agent)
     }
   }
 
@@ -163,12 +177,19 @@ export function apply(ctx) {
       kind: 'exact',
       path: '/dsh-attention',
       handler: (_req, res) => {
-        const state = aggregate()
+        let body
+        try {
+          body = JSON.stringify(aggregate())
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: 'aggregate failed' }))
+          return
+        }
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
           'Cache-Control': 'no-store',
         })
-        res.end(JSON.stringify(state))
+        res.end(body)
       },
     })
   }
@@ -188,9 +209,9 @@ export function apply(ctx) {
     }
     tick()
     return () => {
+      for (const agent of [...liveAgents.keys()]) detachAgent(agent)
       if (routeDispose) { routeDispose(); routeDispose = null }
       routeReady = false
-      liveAgents.clear()
     }
   })
 }
