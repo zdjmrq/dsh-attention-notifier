@@ -65,6 +65,11 @@ function aggregate() {
 
 export const name = 'attention-notifier'
 
+// 硬依赖:加载器会等这些服务就绪后才激活本插件,消除启动时序竞态
+// (webServer 未就绪时路由注册会静默失败且无重试,timer 未就绪时补线轮询
+// 永远不启动)。
+export const inject = ['webServer', 'agents', 'timer']
+
 export function apply(ctx) {
   const mark = (list) => {
     const entry = { since: now() }
