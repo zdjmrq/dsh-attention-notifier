@@ -95,10 +95,69 @@ Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
 
 - **没装本插件**:壳的轮询器读不到 `/dsh-attention`,任务栏不会闪烁 ——
   壳只提供窗口层通道,不探测 DSH 页面状态;
-- **不用壳**:端点照常对外可用,任何自制的呈现端(浏览器脚本、桌面组件
-  等)都能读同一 JSON 做自己的提醒;
+- **不用壳**:插件同样独立可用 —— 端点照常对外,任何自制的呈现端
+  (浏览器脚本、桌面组件、其他人自己打包的桌面壳)都能读同一 JSON 做
+  自己的提醒,详见 [独立使用与适配其他桌面壳](#独立使用与适配其他桌面壳);
 - 按预设安装插件同样兼容壳:端点挂在宿主 `webServer` 上,该预设会话
   运行时即生效。
+
+## 独立使用与适配其他桌面壳
+
+本插件与呈现完全解耦:**不装 dsh-shell 也完全可用**;任何桌面壳 —— 包括
+其他人自己打包的桌面版 —— 只要消费 `GET /dsh-attention`,就能获得同样的
+任务栏提醒能力。插件本身与平台无关,Windows / macOS / Linux 的壳都能读
+同一个端点。
+
+### 端点契约
+
+`GET http://127.0.0.1:3080/dsh-attention` 返回
+(`Cache-Control: no-store`,仅 DSH 本机 web 服务):
+
+| 字段 | 含义 |
+| --- | --- |
+| `intervention` | 是否有审批/提问挂起超过 1 秒,需要你介入 |
+| `running` | 是否有一轮工作正在进行 |
+| `completedId` | 完成轮次自增计数(DSH 重启后归零) |
+| `completedAt` | 最近一次完成的 epoch 毫秒时间 |
+| `stats` | 自诊断计数:`sessions` / `approvals` / `questions` / `completions` |
+
+### 呈现端最小实现
+
+任何呈现端只需三步:**轮询端点 → 判定"你不在" → 呈现与熄灭**。以自己打包
+的 Electron 壳为例,在注入页面的脚本里:
+
+```js
+let baseline = null
+let lastActivity = Date.now()
+for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) {
+  document.addEventListener(ev, () => { lastActivity = Date.now() }, { passive: true })
+}
+setInterval(async () => {
+  try {
+    const state = await (await fetch('/dsh-attention', { cache: 'no-store' })).json()
+    if (baseline === null) { baseline = state.completedId; return } // 首读记基线,旧完成不误闪
+    const away = !document.hasFocus() || Date.now() - lastActivity > 8000
+    if (state.intervention || state.completedId !== baseline) {
+      baseline = state.completedId
+      if (away) window.flashShell && window.flashShell() // 经 preload 桥通知主进程
+    }
+    if (!away) window.clearShell && window.clearShell() // 回到对话立即熄灭
+  } catch {}
+}, 1000)
+```
+
+主进程侧按平台选择呈现方式:
+
+- **Windows 任务栏**:Electron `win.flashFrame(true)`,熄灭用
+  `win.flashFrame(false)`(dsh-shell 的做法,微信新消息同款);
+- **macOS Dock**:`app.dock.bounce('informational')`,或
+  `win.flashFrame(true)`(系统转为一次应用注意请求);
+- **Linux**:窗口管理器支持 urgency hint 时同样可用 `win.flashFrame`。
+
+示例里的 `window.flashShell / clearShell` 是示意桥,按你的 preload 设计自行
+命名即可;1 秒轮询、8 秒闲置、完成确认窗口等阈值都只是推荐值,可自行调整。
+不装任何呈现端时,插件只是把状态聚合在端点里(浏览器直接打开即可查看),
+不会自行闪烁。
 
 ## 验证
 
