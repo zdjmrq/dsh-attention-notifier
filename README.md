@@ -1,6 +1,6 @@
 # DSH Attention Notifier
 
-给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 添加"微信式"任务栏注意力提醒的**持久化 Cordis 插件(宿主半)**,与
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 添加"微信式"任务栏操作提示的**持久化 Cordis 插件(宿主半)**,与
 [dsh-shell](https://github.com/zdjmrq/dsh-shell) 桌面壳**配套使用(推荐)**:插件负责"判",壳负责"显"。
 
 ## 功能
