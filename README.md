@@ -1,6 +1,7 @@
 # DSH Attention Notifier
 
-给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 添加"微信式"任务栏注意力提醒的**持久化 Cordis 插件(宿主半)**。
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 添加"微信式"任务栏注意力提醒的**持久化 Cordis 插件(宿主半)**,与
+[dsh-shell](https://github.com/zdjmrq/dsh-shell) 桌面壳**配套使用(推荐)**:插件负责"判",壳负责"显"。
 
 ## 功能
 
@@ -8,7 +9,10 @@
 
 - 只做**判定**,不碰任何 UI,不发布任何服务;
 - **持久化**:作为 agent preset 的一行加载,随 DSH 重启自动生效;
-- 自带 `stats` 自诊断计数,排查问题一目了然。
+- 自带 `stats` 自诊断计数,排查问题一目了然;
+- 与 [dsh-shell](https://github.com/zdjmrq/dsh-shell) 桌面壳**配套使用(推荐)**:
+  插件只负责判定与状态端点,任务栏闪烁等呈现全部由壳完成,详见
+  [与 dsh-shell 搭配使用](#与-dsh-shell-搭配使用推荐)。
 
 ## 工作原理
 
@@ -62,8 +66,39 @@ Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
 
 ### 呈现
 
-配合桌面壳呈现提醒 —— 推荐 [dsh-shell](https://github.com/zdjmrq/dsh-shell)
-的注意力提醒实现(preload 桥 + 页面轮询 + 任务栏闪烁)。
+呈现由桌面壳完成,无需任何页面侧插件 —— 见
+[与 dsh-shell 搭配使用(推荐)](#与-dsh-shell-搭配使用推荐)。
+
+## 与 dsh-shell 搭配使用(推荐)
+
+本插件与 [dsh-shell](https://github.com/zdjmrq/dsh-shell) 是**一对**:
+一个负责"判",一个负责"显",建议一起安装。
+
+- **本插件(DSH 侧)**:把"需要介入 / 一轮完成"聚合到
+  `GET /dsh-attention` JSON 端点,不碰任何 UI;
+- **dsh-shell(桌面侧)**:注入页面的轮询器每秒读取该端点,结合窗口焦点
+  与操作活动判定"你不在",再经 preload 桥(`window.dshShell.setAttention`)
+  上报主进程,触发 Windows 任务栏按钮闪烁(微信新消息同款,闪几轮后
+  常驻淡红);介入与完成同款呈现。
+
+### 安装步骤
+
+1. 按上文把本插件装好(宿主层即可,所有预设自动生效);
+2. 获取并运行 dsh-shell:按其 README 打包 `DSH Desktop.exe`
+   (或开发模式 `npm start`);
+3. 确认壳 `config.json` 里的 `port` 与 DSH web 端口一致(默认都是
+   `3080`)—— 不一致时壳读不到端点,提醒不会出现;
+4. 正常使用即可:需要介入或一轮完成时,只要你没在关注(窗口失焦/最小化,
+   或聚焦但超过 8 秒无操作),任务栏按钮就闪烁;回到对话立即熄灭。
+
+### 注意事项
+
+- **没装本插件**:壳的轮询器读不到 `/dsh-attention`,任务栏不会闪烁 ——
+  壳只提供窗口层通道,不探测 DSH 页面状态;
+- **不用壳**:端点照常对外可用,任何自制的呈现端(浏览器脚本、桌面组件
+  等)都能读同一 JSON 做自己的提醒;
+- 按预设安装插件同样兼容壳:端点挂在宿主 `webServer` 上,该预设会话
+  运行时即生效。
 
 ## 验证
 
