@@ -42,8 +42,11 @@ Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
 ```yaml
 - insert:
     - id: attention-notifier
-      name: 'C:/Users/<你的用户名>/.dsh/plugins/attention-plugin.mjs'
+      name: 'file:///C:/Users/<你的用户名>/.dsh/plugins/attention-plugin.mjs'
 ```
+
+   > Windows 下 `name` 必须用 `file:///` 绝对 URL:`C:/...` 形式会被 Node ESM
+   > 当作 scheme 为 `c:` 的 URL 而拒绝导入,导致启动失败。
 
 3. 重启 DSH(关壳重开,或重启 `pnpm dsh web`),无其他步骤。
 

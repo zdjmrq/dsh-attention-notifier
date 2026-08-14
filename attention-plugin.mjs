@@ -10,17 +10,22 @@
 // 根 agent 自己的 ctx 上(经 agents.roots() 取得),天然只收到该根 agent
 // 的事件 —— 子代理(subagent)是受管子 agent,不会触发误报。
 // 启动时 agent 尚未创建,1 秒轮询持续补线新出现的根 agent(新会话/恢复
-// 会话都会产生新 agent 对象),同时清理已销毁的 agent。
+// 会话都会产生新 agent 对象),同时清理已销毁的 agent;webServer 就绪前
+// 路由注册也由同一轮询重试。
 //
 // 经宿主 webServer 挂载 GET /dsh-attention,供桌面壳(如 dsh-shell)注入
 // 页面的轮询器读取并上报任务栏闪烁。本插件只消费宿主服务、不发布任何
 // 服务。端点带 stats 自诊断计数。
+//
+// 注意:组合行里的 name 必须用 file:/// 绝对 URL(Windows 下 C:/ 形式的
+// 绝对路径会被 Node ESM 当作 scheme 为 c: 的 URL 而拒绝导入)。
 
 const now = () => Date.now()
 
 const liveAgents = new Map() // Agent -> local
 const wiredAgents = new WeakSet()
 let routeDispose = null
+let routeReady = false
 
 function aggregate() {
   const t = now()
@@ -148,7 +153,28 @@ export function apply(ctx) {
     }
   }
 
+  // webServer 就绪前由轮询重试注册,避免启动时序问题
+  const ensureRoute = () => {
+    if (routeReady) return
+    const webServer = ctx.get('webServer')
+    if (!webServer || typeof webServer.register !== 'function') return
+    routeReady = true
+    routeDispose = webServer.register({
+      kind: 'exact',
+      path: '/dsh-attention',
+      handler: (_req, res) => {
+        const state = aggregate()
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        })
+        res.end(JSON.stringify(state))
+      },
+    })
+  }
+
   const tick = () => {
+    ensureRoute()
     const agents = ctx.get('agents')
     if (!agents || typeof agents.roots !== 'function' || typeof agents.get !== 'function') return
     sweep(agents)
@@ -163,24 +189,8 @@ export function apply(ctx) {
     tick()
     return () => {
       if (routeDispose) { routeDispose(); routeDispose = null }
+      routeReady = false
       liveAgents.clear()
     }
-  })
-
-  ctx.effect(() => {
-    const webServer = ctx.get('webServer')
-    if (!webServer || typeof webServer.register !== 'function') return
-    routeDispose = webServer.register({
-      kind: 'exact',
-      path: '/dsh-attention',
-      handler: (_req, res) => {
-        const state = aggregate()
-        res.writeHead(200, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Cache-Control': 'no-store',
-        })
-        res.end(JSON.stringify(state))
-      },
-    })
   })
 }
