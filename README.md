@@ -12,9 +12,11 @@
 
 ## 工作原理
 
-1. 插件挂载后,经 `agents` 服务找到 agent 的 ctx,在其上注册监听器
+1. 插件挂载在**宿主组合层**(Web 组合 patch),一个实例服务**所有预设的所有
+   会话**;经 `agents.roots()` 找到各根 agent 的 ctx,在其上注册监听器
    (agent 级作用域事件沿链**向上**投递,必须挂在 agent 自己的作用域;
-   挂载瞬间 agent 可能尚未注册,插件用 1 秒轮询重试补上);
+   启动时 agent 尚未创建,1 秒轮询持续补线新会话、清理已销毁的会话,
+   子代理事件天然不会误报);
 2. 监听 `agent/status`(完成)、`approval/request` 与 `tools/execute`
    (介入;只观察不代答,waterfall 一律调用 `next()`);
 3. 在宿主 `webServer` 上挂载 `GET /dsh-attention`,输出聚合状态:
@@ -23,26 +25,42 @@
    注入页面的轮询器每秒读取该端点,结合窗口焦点与活动检测决定何时闪烁、
    何时熄灭。
 
-## 安装
+## 安装(宿主层,推荐)
 
-1. 把 `attention-plugin.mjs` 复制进你的 agent preset 目录
-   (`DSH_HOME` 默认 `~/.dsh`;想给哪个预设加提醒就复制到哪个预设目录):
+插件挂载在 Web 组合的 patch 层,**DSH 启动时自动加载,所有预设、所有会话
+自动生效**,无需在每个预设里加行,也无需任何"启用"操作:
+
+1. 把 `attention-plugin.mjs` 放到 `~/.dsh/plugins/`(没有就新建):
 
 ```powershell
-Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\.agent-presets\<你的预设>\"
+New-Item -ItemType Directory -Path "$env:USERPROFILE\.dsh\plugins" -Force
+Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
 ```
 
-2. 在该预设的 `agent.cordis.yml` 末尾追加一行:
+2. 编辑 `~/.dsh/profiles/web/cordis.patch.yml`,把内容 `[]` 替换为:
+
+```yaml
+- insert:
+    - id: attention-notifier
+      name: 'C:/Users/<你的用户名>/.dsh/plugins/attention-plugin.mjs'
+```
+
+3. 重启 DSH(关壳重开,或重启 `pnpm dsh web`),无其他步骤。
+
+### 备选:按预设安装
+
+只想给特定预设加提醒时,把 `attention-plugin.mjs` 复制进该预设目录,并在其
+`agent.cordis.yml` 末尾追加一行:
 
 ```yaml
 - id: attention-notifier
   name: './attention-plugin.mjs'
 ```
 
-3. 让会话使用该预设:把 `settings.yaml` 的 `agent-presets.default` 指向它,
-   或新建会话时在界面里选择;
-4. (可选)配合桌面壳呈现提醒 —— 推荐 [dsh-shell](https://github.com/zdjmrq/dsh-shell)
-   的注意力提醒实现(preload 桥 + 页面轮询 + 任务栏闪烁)。
+### 呈现
+
+配合桌面壳呈现提醒 —— 推荐 [dsh-shell](https://github.com/zdjmrq/dsh-shell)
+的注意力提醒实现(preload 桥 + 页面轮询 + 任务栏闪烁)。
 
 ## 验证
 

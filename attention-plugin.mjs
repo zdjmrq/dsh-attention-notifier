@@ -1,26 +1,26 @@
-// DSH Attention Notifier — 持久宿主半(桌面壳提醒的判定端)。
+// DSH Attention Notifier — 宿主层版本(Web 组合 patch 挂载)。
 //
-// 判定两类信号:
+// 与"预设行版本"的区别:挂载在宿主组合层,一个实例服务**所有预设的所有
+// 会话**,无需在每个预设里加行。判定两类信号:
 //   - 需要介入:审批请求挂起、或向用户提问(ask_user_question 执行中)超过 1 秒
 //     (机器秒答的审批不会误报);
-//   - 一轮完成:agent 状态 running -> idle。
+//   - 一轮完成:根 agent 状态 running -> idle。
 //
-// 关键实现点:agent 级事件(agent/status、approval/request、tools/execute)按
-// 作用域沿链向上投递、绝不向下,而预设插件挂在 agent 的子作用域(会话作用域),
-// 直接 ctx.on 收不到。因此监听器必须注册在 agent 自己的 ctx 上(经 agents
-// 服务取得)。挂载瞬间 agent 可能尚未进入注册表,用 1 秒轮询重试补上。
+// 作用域规则:agent 级事件沿作用域链向上投递、绝不向下;监听器注册在
+// 根 agent 自己的 ctx 上(经 agents.roots() 取得),天然只收到该根 agent
+// 的事件 —— 子代理(subagent)是受管子 agent,不会触发误报。
+// 启动时 agent 尚未创建,1 秒轮询持续补线新出现的根 agent(新会话/恢复
+// 会话都会产生新 agent 对象),同时清理已销毁的 agent。
 //
-// 通过宿主 webServer 挂载 GET /dsh-attention 端点,供 dsh-shell 注入到页面
-// 的轮询器读取并上报任务栏闪烁。路由随挂载本预设的会话数增减(最后一个会话
-// 卸载时移除,下个会话挂载时重新注册),并聚合所有已挂载会话的状态。
-// 本插件只消费宿主服务、不发布任何服务,无需 isolate realm。
-// 端点带 stats 自诊断计数,便于排查事件是否被观察到。
+// 经宿主 webServer 挂载 GET /dsh-attention,供桌面壳(如 dsh-shell)注入
+// 页面的轮询器读取并上报任务栏闪烁。本插件只消费宿主服务、不发布任何
+// 服务。端点带 stats 自诊断计数。
 
 const now = () => Date.now()
 
-const liveSessions = new Set()
+const liveAgents = new Map() // Agent -> local
+const wiredAgents = new WeakSet()
 let routeDispose = null
-let routeOwners = 0
 
 function aggregate() {
   const t = now()
@@ -29,59 +29,34 @@ function aggregate() {
     running: false,
     completedId: 0,
     completedAt: 0,
-    stats: { sessions: liveSessions.size, approvals: 0, questions: 0, completions: 0 },
+    stats: { sessions: liveAgents.size, approvals: 0, questions: 0, completions: 0 },
   }
-  for (const s of liveSessions) {
+  for (const local of liveAgents.values()) {
     let oldest = -1
-    for (const entry of s.approvals) {
+    for (const entry of local.approvals) {
       if (oldest < 0 || entry.since < oldest) oldest = entry.since
     }
     if (oldest >= 0 && t - oldest >= 1000) out.intervention = true
     oldest = -1
-    for (const entry of s.questions) {
+    for (const entry of local.questions) {
       if (oldest < 0 || entry.since < oldest) oldest = entry.since
     }
     if (oldest >= 0 && t - oldest >= 1000) out.intervention = true
-    if (s.running) out.running = true
-    if (s.completedAt > out.completedAt) {
-      out.completedAt = s.completedAt
-      out.completedId = s.completedId
+    if (local.running) out.running = true
+    if (local.completedAt > out.completedAt) {
+      out.completedAt = local.completedAt
+      out.completedId = local.completedId
     }
-    out.stats.approvals += s.stats.approvals
-    out.stats.questions += s.stats.questions
-    out.stats.completions += s.stats.completions
+    out.stats.approvals += local.stats.approvals
+    out.stats.questions += local.stats.questions
+    out.stats.completions += local.stats.completions
   }
   return out
-}
-
-function ensureRoute(webServer) {
-  if (routeDispose) return
-  routeDispose = webServer.register({
-    kind: 'exact',
-    path: '/dsh-attention',
-    handler: (_req, res) => {
-      const state = aggregate()
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store',
-      })
-      res.end(JSON.stringify(state))
-    },
-  })
 }
 
 export const name = 'attention-notifier'
 
 export function apply(ctx) {
-  const local = {
-    approvals: [],
-    questions: [],
-    running: false,
-    completedId: 0,
-    completedAt: 0,
-    stats: { approvals: 0, questions: 0, completions: 0 },
-  }
-
   const mark = (list) => {
     const entry = { since: now() }
     list.push(entry)
@@ -96,8 +71,8 @@ export function apply(ctx) {
     else done()
   }
 
-  // 在目标 ctx(agent.ctx)上注册三个监听器,返回统一拆解函数
-  const registerListeners = (target) => {
+  // 在根 agent 的 ctx 上注册三个监听器(闭包绑定该 agent 的 local)
+  const registerListeners = (target, local) => {
     const offs = []
     offs.push(target.on('agent/status', (payload) => {
       const status = payload && payload.status
@@ -146,69 +121,66 @@ export function apply(ctx) {
     }
   }
 
-  // 找到 agent 注册表里所有 agent 的 ctx 并注册监听器;
-  // 挂载瞬间 agent 可能还没注册,由下面的定时器重试。
-  let wired = false
-  let wireOff = null
-  let retryDispose = null
-  let retries = 0
-
-  const tryWire = () => {
-    if (wired) return
-    const agents = ctx.get('agents')
-    if (!agents || typeof agents.list !== 'function') return
-    const list = agents.list()
-    if (!Array.isArray(list) || list.length === 0) return
-    const targets = []
-    for (const agent of list) {
-      if (agent && agent.ctx && typeof agent.ctx.on === 'function') {
-        if (agent.status === 'running') local.running = true
-        targets.push(agent.ctx)
-      }
+  const wireAgent = (agent) => {
+    if (wiredAgents.has(agent)) return
+    if (!agent || !agent.ctx || typeof agent.ctx.on !== 'function') return
+    wiredAgents.add(agent)
+    const local = {
+      approvals: [],
+      questions: [],
+      running: agent.status === 'running',
+      completedId: 0,
+      completedAt: 0,
+      stats: { approvals: 0, questions: 0, completions: 0 },
     }
-    if (targets.length === 0) return
-    wired = true
-    const offs = targets.map((t) => registerListeners(t))
-    wireOff = () => {
-      for (const off of offs) off()
-    }
-    console.log('[attention] wired listeners on ' + targets.length + ' agent ctx(s)')
+    liveAgents.set(agent, local)
+    registerListeners(agent.ctx, local)
+    console.log('[attention] wired root agent ' + String(agent.id))
   }
 
-  ctx.effect(() => {
-    liveSessions.add(local)
-    return () => liveSessions.delete(local)
-  })
+  const sweep = (agents) => {
+    for (const agent of liveAgents.keys()) {
+      try {
+        if (agents.get(agent.id) !== agent) liveAgents.delete(agent)
+      } catch (err) {
+        liveAgents.delete(agent)
+      }
+    }
+  }
+
+  const tick = () => {
+    const agents = ctx.get('agents')
+    if (!agents || typeof agents.roots !== 'function' || typeof agents.get !== 'function') return
+    sweep(agents)
+    for (const agent of agents.roots()) wireAgent(agent)
+  }
 
   ctx.effect(() => {
     const timer = ctx.get('timer')
     if (timer && typeof timer.interval === 'function') {
-      retryDispose = timer.interval(() => {
-        retries += 1
-        tryWire()
-        if (wired || retries > 60) {
-          if (retryDispose) { retryDispose(); retryDispose = null }
-        }
-      }, 1000)
+      timer.interval(tick, 1000)
     }
-    tryWire()
+    tick()
     return () => {
-      if (retryDispose) { retryDispose(); retryDispose = null }
-      if (wireOff) { wireOff(); wireOff = null }
+      if (routeDispose) { routeDispose(); routeDispose = null }
+      liveAgents.clear()
     }
   })
 
   ctx.effect(() => {
     const webServer = ctx.get('webServer')
     if (!webServer || typeof webServer.register !== 'function') return
-    routeOwners += 1
-    ensureRoute(webServer)
-    return () => {
-      routeOwners -= 1
-      if (routeOwners <= 0 && routeDispose) {
-        routeDispose()
-        routeDispose = null
-      }
-    }
+    routeDispose = webServer.register({
+      kind: 'exact',
+      path: '/dsh-attention',
+      handler: (_req, res) => {
+        const state = aggregate()
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        })
+        res.end(JSON.stringify(state))
+      },
+    })
   })
 }
