@@ -176,6 +176,10 @@ Invoke-WebRequest http://127.0.0.1:3080/dsh-attention
 - 回到对话(窗口聚焦,或窗口内任意操作)立即熄灭;
 - 完成事件若发生在你正活跃地看着窗口时,视为已看到,不闪。
 
+## 📖 文字开源描述
+
+本插件在「文字开源」枢纽仓库 [dsh-text-open-source](https://github.com/zdjmrq/dsh-text-open-source) 中配有完整描述（功能 / 技术路线 / 结构 / 关键实现 / 复刻提示词，不依赖代码即可复刻、便于理解与微调）：[plugins/dsh-attention-notifier.md](https://github.com/zdjmrq/dsh-text-open-source/blob/main/plugins/dsh-attention-notifier.md)。
+
 ## License
 
 MIT
