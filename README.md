@@ -12,7 +12,10 @@
 - 自带 `stats` 自诊断计数,排查问题一目了然;
 - 与 [dsh-shell](https://github.com/zdjmrq/dsh-shell) 桌面壳**配套使用(推荐)**:
   插件只负责判定与状态端点,任务栏闪烁等呈现全部由壳完成,详见
-  [与 dsh-shell 搭配使用](#与-dsh-shell-搭配使用推荐)。
+  [与 dsh-shell 搭配使用](#与-dsh-shell-搭配使用推荐);
+- **网页版开箱即用**:仓库内置 Web 呈现端插件 `web/attention-notifier-web`,
+  无需桌面壳即可在标签页里完成同样的提醒(标题/favicon 闪烁 + 系统通知),
+  详见 [网页版适配](#网页版适配web-呈现端无需桌面壳)。
 
 ## 工作原理
 
@@ -69,6 +72,10 @@ Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
 呈现由桌面壳完成,无需任何页面侧插件 —— 见
 [与 dsh-shell 搭配使用(推荐)](#与-dsh-shell-搭配使用推荐)。
 
+> 不用桌面壳时,网页版可安装仓库内的 Web 呈现端插件
+> (`web/attention-notifier-web`),在标签页内完成同样的提醒 —— 见
+> [网页版适配](#网页版适配web-呈现端无需桌面壳)。
+
 ## 与 dsh-shell 搭配使用(推荐)
 
 本插件与 [dsh-shell](https://github.com/zdjmrq/dsh-shell) 是**一对**:
@@ -100,6 +107,62 @@ Copy-Item attention-plugin.mjs "$env:USERPROFILE\.dsh\plugins\"
   自己的提醒,详见 [独立使用与适配其他桌面壳](#独立使用与适配其他桌面壳);
 - 按预设安装插件同样兼容壳:端点挂在宿主 `webServer` 上,该预设会话
   运行时即生效。
+
+## 网页版适配(Web 呈现端,无需桌面壳)
+
+本插件的"判"与"显"完全解耦。除了桌面壳,dsh 的**网页版**也有开箱即用的
+呈现端:仓库内 `web/attention-notifier-web` 是一个**双半插件** —— 宿主半为
+空的加载占位,浏览器半在网页里轮询 `GET /dsh-attention`(页面与端点由同一
+webServer 提供、同源,零 CORS 配置),在你不在时把标签页标题与 favicon
+变成闪烁提醒,并(授权后)弹系统通知。判显职责与桌面壳方案一致,只是把
+"显"从 Electron 换成浏览器 API。
+
+### 呈现行为
+
+- **需要介入**(审批/提问挂起 ≥1 秒):标题加「⚠ 需要介入」前缀并交替
+  闪烁、favicon 变红点,直至你回到对话或挂起结束;授权后首次触发弹一条
+  系统通知;
+- **一轮完成**(running → idle):标题加「✓ 本轮完成」前缀,同款闪烁,
+  不弹通知(避免打扰);
+- **"你不在"判定**:标签页隐藏(`document.hidden`)、窗口失焦
+  (`!hasFocus()`)、或超过 8 秒无任何操作(鼠标/键盘/滚轮/触摸)即视为
+  不在,避免误闪;回到对话立即熄灭;
+- **首读记基线**:`completedId` 在 DSH 重启后归零,浏览器半首读时记录
+  基线,重启前的旧计数不会被当成"新完成"误闪。
+
+### 安装
+
+1. 把 `web/attention-notifier-web` 整个目录复制到
+   `~/.dsh/profiles/node_modules/`(与 `conversation-cost-balance` 同级):
+
+```powershell
+Copy-Item web\attention-notifier-web "$env:USERPROFILE\.dsh\profiles\node_modules\" -Recurse
+```
+
+2. 编辑 `~/.dsh/profiles/web/cordis.patch.yml`,追加一个 insert 条目:
+
+```yaml
+- insert:
+    - id: attention-notifier-web
+      name: 'attention-notifier-web'
+```
+
+3. 重启 DSH web(关壳重开,或重启 `pnpm dsh web`),刷新页面;
+4. 可选:首次收到提醒时浏览器会请求通知权限,允许后即可弹系统通知。
+
+> 宿主半是空实现,仅作为加载条目让 `dsh-client-modules` 发现并下发浏览器半
+> (机制同 `conversation-cost-balance`);判定仍由 `attention-plugin.mjs`
+> 完成,两个插件相互独立,可只装其一。
+
+### 与桌面壳方案的差异与注意
+
+- **无任务栏闪烁**:网页标签页没有"任务栏图标",最接近的替代是系统通知
+  与标题/favicon 闪烁;需要任务栏级提醒时仍用 dsh-shell;
+- **后台节流**:浏览器会对后台标签页的定时器降频(Chrome 在标签页隐藏
+  5 分钟后可能降到约 1 次/分钟),长时间完全切走时提醒可能延迟;
+- **端点无鉴权**:仅限 DSH 本机 web 服务使用,别把端口暴露到公网;
+- 阈值(轮询 1 秒、闲置 8 秒、闪烁 600ms、通知开关)在
+  `web/attention-notifier-web/lib/client.js` 顶部常量中,可自行调整。
 
 ## 独立使用与适配其他桌面壳
 
@@ -158,6 +221,11 @@ setInterval(async () => {
 命名即可;1 秒轮询、8 秒闲置、完成确认窗口等阈值都只是推荐值,可自行调整。
 不装任何呈现端时,插件只是把状态聚合在端点里(浏览器直接打开即可查看),
 不会自行闪烁。
+
+仓库内的 Web 呈现端插件(`web/attention-notifier-web`)就是这个契约的
+浏览器原生实现:把"任务栏闪烁"换成标签页标题/favicon 闪烁与系统通知,
+无需任何桌面桥 —— 见
+[网页版适配](#网页版适配web-呈现端无需桌面壳)。
 
 ## 验证
 

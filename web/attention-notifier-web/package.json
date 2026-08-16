@@ -1,0 +1,19 @@
+{
+  "name": "attention-notifier-web",
+  "version": "1.0.0",
+  "description": "Web presenter for dsh-attention-notifier: the browser half polls GET /dsh-attention inside the DSH web GUI and flashes the tab title/favicon (plus an optional system notification) while the user is away.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}
